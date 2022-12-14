@@ -1,0 +1,2 @@
+# plog
+Golang log library
