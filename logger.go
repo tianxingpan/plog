@@ -13,7 +13,7 @@ type Field struct {
 	Value interface{}
 }
 
-// Logger is the underlying logging work for pRPC framework.
+// Logger is the underlying logging work
 type Logger interface {
 	// Trace logs to TRACE log. Arguments are handled in the manner of fmt.Print.
 	Trace(args ...interface{})
