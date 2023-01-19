@@ -6,11 +6,11 @@ Golang log library, It is a plug-in log library, so the name plog is the abbrevi
 ### simple example
 ```go
 import (
-	"github.com/impetus-seo/sso/pkg/log"
+	"github.com/tianxingpan/plog"
 )
 
 func Example() {
-	l := log.WithFields("uid", "10012")
+	l := plog.WithFields("uid", "10012")
 
 	l.Trace("helloworld")
 	l.Debug("helloworld")
