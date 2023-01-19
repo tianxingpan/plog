@@ -2,8 +2,11 @@ package plog
 
 import (
 	"fmt"
+	"os"
 	"strconv"
+	"time"
 
+	"github.com/tianxingpan/plog/rolllog"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 )
@@ -47,6 +50,174 @@ var zapLevelToLevel = map[zapcore.Level]Level{
 	zapcore.WarnLevel:  LevelWarn,
 	zapcore.ErrorLevel: LevelError,
 	zapcore.FatalLevel: LevelFatal,
+}
+
+// NewZapLog creates a trpc default Logger from zap whose caller skip is set to 2.
+func NewZapLog(c Config) Logger {
+	return NewZapLogWithCallerSkip(c, 2)
+}
+
+// NewZapLogWithCallerSkip creates a trpc default Logger from zap.
+func NewZapLogWithCallerSkip(c Config, callerSkip int) Logger {
+	var (
+		cores  []zapcore.Core
+		levels []zap.AtomicLevel
+	)
+	for _, o := range c {
+		writer := GetWriter(o.Writer)
+		if writer == nil {
+			panic("log: writer core: " + o.Writer + " no registered")
+		}
+		decoder := &DecoderImp{OutputConfig: &o}
+		if err := writer.Setup(o.Writer, decoder); err != nil {
+			panic("log: writer core: " + o.Writer + " setup fail: " + err.Error())
+		}
+		cores = append(cores, decoder.Core)
+		levels = append(levels, decoder.ZapLevel)
+	}
+	return &zapLog{
+		levels: levels,
+		logger: zap.New(
+			zapcore.NewTee(cores...),
+			zap.AddCallerSkip(callerSkip),
+			zap.AddCaller(),
+		),
+	}
+}
+
+func newEncoder(c *OutputConfig) zapcore.Encoder {
+	encoderCfg := zapcore.EncoderConfig{
+		TimeKey:        GetLogEncoderKey("T", c.FormatConfig.TimeKey),
+		LevelKey:       GetLogEncoderKey("L", c.FormatConfig.LevelKey),
+		NameKey:        GetLogEncoderKey("N", c.FormatConfig.NameKey),
+		CallerKey:      GetLogEncoderKey("C", c.FormatConfig.CallerKey),
+		FunctionKey:    GetLogEncoderKey(zapcore.OmitKey, c.FormatConfig.FunctionKey),
+		MessageKey:     GetLogEncoderKey("M", c.FormatConfig.MessageKey),
+		StacktraceKey:  GetLogEncoderKey("S", c.FormatConfig.StacktraceKey),
+		LineEnding:     zapcore.DefaultLineEnding,
+		EncodeLevel:    zapcore.CapitalLevelEncoder,
+		EncodeTime:     NewTimeEncoder(c.FormatConfig.TimeFmt),
+		EncodeDuration: zapcore.StringDurationEncoder,
+		EncodeCaller:   zapcore.ShortCallerEncoder,
+	}
+	switch c.Formatter {
+	case "console":
+		return zapcore.NewConsoleEncoder(encoderCfg)
+	case "json":
+		return zapcore.NewJSONEncoder(encoderCfg)
+	default:
+		return zapcore.NewConsoleEncoder(encoderCfg)
+	}
+}
+
+// GetLogEncoderKey gets user defined log output name, uses defKey if empty.
+func GetLogEncoderKey(defKey, key string) string {
+	if key == "" {
+		return defKey
+	}
+	return key
+}
+
+func newConsoleCore(c *OutputConfig) (zapcore.Core, zap.AtomicLevel) {
+	lvl := zap.NewAtomicLevelAt(Levels[c.Level])
+	return zapcore.NewCore(
+		newEncoder(c),
+		zapcore.Lock(os.Stdout),
+		lvl), lvl
+}
+
+func newFileCore(c *OutputConfig) (zapcore.Core, zap.AtomicLevel, error) {
+	opts := []rolllog.Option{
+		rolllog.WithMaxAge(c.WriteConfig.MaxAge),
+		rolllog.WithMaxBackups(c.WriteConfig.MaxBackups),
+		rolllog.WithCompress(c.WriteConfig.Compress),
+		rolllog.WithMaxSize(c.WriteConfig.MaxSize),
+	}
+	// roll by time.
+	if c.WriteConfig.RollType != RollBySize {
+		opts = append(opts, rolllog.WithRotationTime(c.WriteConfig.TimeUnit.Format()))
+	}
+	writer, err := rolllog.NewRollWriter(c.WriteConfig.Filename, opts...)
+	if err != nil {
+		return nil, zap.AtomicLevel{}, err
+	}
+
+	// write mod.
+	var ws zapcore.WriteSyncer
+	if c.WriteConfig.WriteMode == WriteSync {
+		ws = zapcore.AddSync(writer)
+	} else {
+		dropLog := c.WriteConfig.WriteMode == WriteFast
+		ws = rolllog.NewAsyncRollWriter(writer,
+			rolllog.WithDropLog(dropLog),
+		)
+	}
+
+	// log level.
+	lvl := zap.NewAtomicLevelAt(Levels[c.Level])
+	return zapcore.NewCore(
+		newEncoder(c),
+		ws, lvl,
+	), lvl, nil
+}
+
+// NewTimeEncoder creates a time format encoder.
+func NewTimeEncoder(format string) zapcore.TimeEncoder {
+	switch format {
+	case "":
+		return func(t time.Time, enc zapcore.PrimitiveArrayEncoder) {
+			enc.AppendByteString(DefaultTimeFormat(t))
+		}
+	case "seconds":
+		return zapcore.EpochTimeEncoder
+	case "milliseconds":
+		return zapcore.EpochMillisTimeEncoder
+	case "nanoseconds":
+		return zapcore.EpochNanosTimeEncoder
+	default:
+		return func(t time.Time, enc zapcore.PrimitiveArrayEncoder) {
+			enc.AppendString(CustomTimeFormat(t, format))
+		}
+	}
+}
+
+// CustomTimeFormat customize time format.
+func CustomTimeFormat(t time.Time, format string) string {
+	return t.Format(format)
+}
+
+// DefaultTimeFormat returns the default time format.
+func DefaultTimeFormat(t time.Time) []byte {
+	t = t.Local()
+	year, month, day := t.Date()
+	hour, minute, second := t.Clock()
+	micros := t.Nanosecond() / 1000
+
+	buf := make([]byte, 23)
+	buf[0] = byte((year/1000)%10) + '0'
+	buf[1] = byte((year/100)%10) + '0'
+	buf[2] = byte((year/10)%10) + '0'
+	buf[3] = byte(year%10) + '0'
+	buf[4] = '-'
+	buf[5] = byte((month)/10) + '0'
+	buf[6] = byte((month)%10) + '0'
+	buf[7] = '-'
+	buf[8] = byte((day)/10) + '0'
+	buf[9] = byte((day)%10) + '0'
+	buf[10] = ' '
+	buf[11] = byte((hour)/10) + '0'
+	buf[12] = byte((hour)%10) + '0'
+	buf[13] = ':'
+	buf[14] = byte((minute)/10) + '0'
+	buf[15] = byte((minute)%10) + '0'
+	buf[16] = ':'
+	buf[17] = byte((second)/10) + '0'
+	buf[18] = byte((second)%10) + '0'
+	buf[19] = '.'
+	buf[20] = byte((micros/100000)%10) + '0'
+	buf[21] = byte((micros/10000)%10) + '0'
+	buf[22] = byte((micros/1000)%10) + '0'
+	return buf
 }
 
 // ZapLogWrapper delegates zapLogger which was introduced in this

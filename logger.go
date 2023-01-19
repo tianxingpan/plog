@@ -1,5 +1,12 @@
 package plog
 
+import (
+	"fmt"
+
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
+)
+
 // Field is the user defined log field.
 type Field struct {
 	Key   string
@@ -49,4 +56,72 @@ type Logger interface {
 	WithFields(fields ...string) Logger
 	// With add user defined fields to Logger. Fields support multiple values.
 	With(fields ...Field) Logger
+}
+
+// DecoderImp decodes the log.
+type DecoderImp struct {
+	OutputConfig *OutputConfig
+	Core         zapcore.Core
+	ZapLevel     zap.AtomicLevel
+}
+
+// Decode decodes writer configuration, copy one.
+func (d *DecoderImp) Decode(cfg interface{}) error {
+	output, ok := cfg.(**OutputConfig)
+	if !ok {
+		return fmt.Errorf("decoder config type:%T invalid, not **OutputConfig", cfg)
+	}
+	*output = d.OutputConfig
+	return nil
+}
+
+// RegisterLogger registers Logger. It supports multiple Logger implementation.
+func RegisterLogger(name string, logger Logger) {
+	mu.Lock()
+	defer mu.Unlock()
+	if logger == nil {
+		panic("log: Register logger is nil")
+	}
+	if _, dup := loggers[name]; dup && name != defaultLoggerName {
+		panic("log: Register called twiced for logger name " + name)
+	}
+	loggers[name] = logger
+	if name == defaultLoggerName {
+		DefaultLogger = logger
+	}
+}
+
+// GetDefaultLogger gets the default Logger.
+// To configure it, set key in configuration file to default.
+// The console output is the default value.
+func GetDefaultLogger() Logger {
+	mu.RLock()
+	l := DefaultLogger
+	mu.RUnlock()
+	return l
+}
+
+// SetLogger sets the default Logger.
+func SetLogger(logger Logger) {
+	mu.Lock()
+	DefaultLogger = logger
+	mu.Unlock()
+}
+
+// GetLogger returns the Logger implementation by log name.
+// log.Debug use DefaultLogger to print logs. You may also use log.Get("name").Debug.
+func GetLogger(name string) Logger {
+	mu.RLock()
+	l := loggers[name]
+	mu.RUnlock()
+	return l
+}
+
+// Sync syncs all registered loggers.
+func Sync() {
+	mu.RLock()
+	defer mu.RUnlock()
+	for _, logger := range loggers {
+		_ = logger.Sync()
+	}
 }
