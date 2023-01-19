@@ -49,12 +49,36 @@ log:
 package main
 
 import (
+    "io/ioutil"
+
     "github.com/tianxingpan/plog"
-    ...
+    yaml "gopkg.in/yaml.v3"
 )
 
+type Config struct {
+	Log   plog.Config `yaml:"log" json:"log"`
+}
+
+func initConfig(f string) (*Config, error) {
+	// load配置文件
+	var conf Config
+	content, err := ioutil.ReadFile(f)
+	if err != nil {
+		// log.Error("read config file fail:", err)
+		return nil, err
+	}
+
+	err = yaml.Unmarshal(content, &conf)
+	if err != nil {
+		// log.Error("invalid yaml config:", err)
+		return nil, err
+	}
+	// log.Info("load config")
+	return &conf, nil
+}
+
 func main() {
-    conf, err := config.Init()  // config initial
+    conf, err := initConfig('./app.yaml')  // config initial
 	if err != nil {
 		panic(err.Error())
 	}
