@@ -9,6 +9,7 @@ require (
 	github.com/lestrrat-go/file-rotatelogs v2.4.0+incompatible
 	github.com/lestrrat-go/strftime v1.0.6
 	github.com/natefinch/lumberjack v2.0.0+incompatible
+	github.com/smartystreets/goconvey v1.7.2
 	github.com/stretchr/testify v1.8.0
 	go.uber.org/zap v1.24.0
 	gopkg.in/natefinch/lumberjack.v2 v2.0.0 // indirect
