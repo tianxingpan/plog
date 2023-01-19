@@ -60,20 +60,16 @@ type Config struct {
 }
 
 func initConfig(f string) (*Config, error) {
-	// load配置文件
 	var conf Config
 	content, err := ioutil.ReadFile(f)
 	if err != nil {
-		// log.Error("read config file fail:", err)
 		return nil, err
 	}
 
 	err = yaml.Unmarshal(content, &conf)
 	if err != nil {
-		// log.Error("invalid yaml config:", err)
 		return nil, err
 	}
-	// log.Info("load config")
 	return &conf, nil
 }
 
