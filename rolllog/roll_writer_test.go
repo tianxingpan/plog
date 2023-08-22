@@ -1,11 +1,13 @@
 package rolllog
 
 import (
+	"errors"
 	"fmt"
-	"io/ioutil"
+	"io/fs"
 	"log"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -13,8 +15,6 @@ import (
 	"testing"
 	"time"
 
-	rotatelogs "github.com/lestrrat-go/file-rotatelogs"
-	"github.com/natefinch/lumberjack"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
@@ -29,43 +29,41 @@ import (
 const (
 	testTimes    = 100000
 	testRoutines = 256
-
-	logDirTest  = "/tmp/log_test"
-	logDirBench = "/tmp/log_bench"
-	logDirAsync = "/tmp/log_async_test"
 )
 
-var dirs = []string{
-	logDirTest,
-	logDirBench,
-	logDirAsync,
-}
+func TestRollWriter_Close(t *testing.T) {
+	t.Run("close roll writer multiple times", func(t *testing.T) {
+		w, err := NewRollWriter(filepath.Join(t.TempDir(), "test.log"))
+		require.Nil(t, err)
 
-func TestMain(m *testing.M) {
-	cleanup()
-	ret := m.Run()
+		logContent := []byte("log content")
+		n, err := w.Write(logContent)
+		require.Nil(t, err)
+		require.Equal(t, len(logContent), n)
 
-	cleanup()
-	os.Exit(ret)
-}
+		err = w.Close()
+		require.Nil(t, err)
 
-func cleanup() {
-	for _, d := range dirs {
-		os.RemoveAll(d)
-	}
+		n, err = w.Write(logContent)
+		require.Contains(t, err.Error(), "roll writer has been closed")
+		require.Zero(t, n)
+
+		err = w.Close()
+		require.Contains(t, err.Error(), "closing closed roll writer")
+	})
 }
 
 func TestRollWriter(t *testing.T) {
-	logDir := logDirTest
-
-	// empty file name.
-	t.Run("empty_log_name", func(t *testing.T) {
+	t.Run("empty log file name", func(t *testing.T) {
+		logDir := t.TempDir()
 		_, err := NewRollWriter("")
 		assert.Error(t, err, "NewRollWriter: invalid log path")
-	})
 
-	// no rolling.
-	t.Run("roll_by_default", func(t *testing.T) {
+		// print log file list.
+		printLogFiles(logDir)
+	})
+	t.Run("roll by default(no rolling)", func(t *testing.T) {
+		logDir := t.TempDir()
 		logName := "test.log"
 		w, err := NewRollWriter(filepath.Join(logDir, logName))
 		assert.NoError(t, err, "NewRollWriter: create logger ok")
@@ -73,7 +71,6 @@ func TestRollWriter(t *testing.T) {
 		for i := 0; i < testTimes; i++ {
 			log.Printf("this is a test log: %d\n", i)
 		}
-		_ = w.Close()
 
 		// check number of rolling log files(current files + backup files).
 		time.Sleep(20 * time.Millisecond)
@@ -81,29 +78,49 @@ func TestRollWriter(t *testing.T) {
 		if len(logFiles) != 1 {
 			t.Errorf("Number of log backup files should be 1")
 		}
-	})
+		require.Nil(t, w.Close())
 
-	// roll by size.
-	t.Run("roll_by_size", func(t *testing.T) {
+		// print log file list.
+		printLogFiles(logDir)
+	})
+	t.Run("roll by size", func(t *testing.T) {
+		logDir := t.TempDir()
 		logName := "test_size.log"
+		const (
+			maxBackup = 2
+			maxSize   = 1
+			maxAge    = 1
+		)
 		w, err := NewRollWriter(filepath.Join(logDir, logName),
-			WithMaxSize(1),
-			WithMaxAge(1),
-			WithMaxBackups(2),
+			WithMaxSize(maxSize),
+			WithMaxAge(maxAge),
+			WithMaxBackups(maxBackup),
 		)
 		assert.NoError(t, err, "NewRollWriter: create logger ok")
 		log.SetOutput(w)
 		for i := 0; i < testTimes; i++ {
 			log.Printf("this is a test log: %d\n", i)
 		}
-		_ = w.Close()
 
+		w.notify()
 		// check number of rolling log files.
-		time.Sleep(20 * time.Millisecond)
-		logFiles := getLogBackups(logDir, logName)
-		if len(logFiles) != 3 {
-			t.Errorf("Number of log backup files should be 3")
-		}
+		var logFiles []os.FileInfo
+		require.Eventuallyf(t,
+			func() bool {
+				logFiles = getLogBackups(logDir, logName)
+				return len(logFiles) == maxBackup+1
+			},
+			5*time.Second,
+			time.Second,
+			"Number of log files should be %d, current: %d, %+v",
+			maxBackup+1, len(logFiles), func() []string {
+				names := make([]string, 0, len(logFiles))
+				for _, f := range logFiles {
+					names = append(names, f.Name())
+				}
+				return names
+			}(),
+		)
 
 		// check rolling log file size(allow to exceed a little).
 		for _, file := range logFiles {
@@ -111,16 +128,24 @@ func TestRollWriter(t *testing.T) {
 				t.Errorf("Log file size exceeds max_size")
 			}
 		}
-	})
+		require.Nil(t, w.Close())
 
-	// rolling by time.
-	t.Run("roll_by_time", func(t *testing.T) {
+		// print log file list.
+		printLogFiles(logDir)
+	})
+	t.Run("roll by time", func(t *testing.T) {
+		logDir := t.TempDir()
 		logName := "test_time.log"
+		const (
+			maxBackup = 3
+			maxSize   = 1
+			maxAge    = 1
+		)
 		w, err := NewRollWriter(filepath.Join(logDir, logName),
 			WithRotationTime(".%Y%m%d"),
-			WithMaxSize(1),
-			WithMaxAge(1),
-			WithMaxBackups(3),
+			WithMaxSize(maxSize),
+			WithMaxAge(maxAge),
+			WithMaxBackups(maxBackup),
 			WithCompress(true),
 		)
 		assert.NoError(t, err, "NewRollWriter: create logger ok")
@@ -128,14 +153,26 @@ func TestRollWriter(t *testing.T) {
 		for i := 0; i < testTimes; i++ {
 			log.Printf("this is a test log: %d\n", i)
 		}
-		_ = w.Close()
 
+		w.notify()
 		// check number of rolling log files.
-		time.Sleep(20 * time.Millisecond)
-		logFiles := getLogBackups(logDir, logName)
-		if len(logFiles) != 4 {
-			t.Errorf("Number of log files should be 4")
-		}
+		var logFiles []os.FileInfo
+		require.Eventuallyf(t,
+			func() bool {
+				logFiles = getLogBackups(logDir, logName)
+				return len(logFiles) == maxBackup+1
+			},
+			5*time.Second,
+			time.Second,
+			"Number of log files should be %d, current: %d, %+v",
+			maxBackup+1, len(logFiles), func() []string {
+				names := make([]string, 0, len(logFiles))
+				for _, f := range logFiles {
+					names = append(names, f.Name())
+				}
+				return names
+			}(),
+		)
 
 		// check rolling log file size(allow to exceed a little).
 		for _, file := range logFiles {
@@ -154,17 +191,15 @@ func TestRollWriter(t *testing.T) {
 		if compressFileNum != 3 {
 			t.Errorf("Number of compress log files should be 3")
 		}
+		require.Nil(t, w.Close())
+
+		// print log file list.
+		printLogFiles(logDir)
 	})
-
-	// wait 1 second.
-	time.Sleep(1 * time.Second)
-
-	// print log file list.
-	printLogFiles(logDir)
 }
 
 func TestAsyncRollWriter(t *testing.T) {
-	logDir := logDirAsync
+	logDir := t.TempDir()
 	const flushThreshold = 4 * 1024
 
 	// no rolling(asynchronous mod)
@@ -179,7 +214,6 @@ func TestAsyncRollWriter(t *testing.T) {
 		for i := 0; i < testTimes; i++ {
 			log.Printf("this is a test log: %d\n", i)
 		}
-		_ = asyncWriter.Close()
 
 		// check number of rolling log files.
 		time.Sleep(20 * time.Millisecond)
@@ -187,6 +221,7 @@ func TestAsyncRollWriter(t *testing.T) {
 		if len(logFiles) != 1 {
 			t.Errorf("Number of log backup files should be 1")
 		}
+		require.Nil(t, asyncWriter.Close())
 	})
 
 	// rolling by size(asynchronous mod)
@@ -203,10 +238,9 @@ func TestAsyncRollWriter(t *testing.T) {
 		for i := 0; i < testTimes; i++ {
 			log.Printf("this is a test log: %d\n", i)
 		}
-		_ = asyncWriter.Close()
 
 		// check number of rolling log files.
-		time.Sleep(20 * time.Millisecond)
+		time.Sleep(200 * time.Millisecond)
 		logFiles := getLogBackups(logDir, logName)
 		if len(logFiles) != 5 {
 			t.Errorf("Number of log backup files should be 5")
@@ -218,6 +252,7 @@ func TestAsyncRollWriter(t *testing.T) {
 				t.Errorf("Log file size exceeds max_size")
 			}
 		}
+		require.Nil(t, asyncWriter.Close())
 	})
 
 	// rolling by time(asynchronous mod)
@@ -236,13 +271,13 @@ func TestAsyncRollWriter(t *testing.T) {
 		for i := 0; i < testTimes; i++ {
 			log.Printf("this is a test log: %d\n", i)
 		}
-		_ = asyncWriter.Close()
+		require.Nil(t, asyncWriter.Sync())
 
 		// check number of rolling log files.
-		time.Sleep(20 * time.Millisecond)
+		time.Sleep(200 * time.Millisecond)
 		logFiles := getLogBackups(logDir, logName)
 		if len(logFiles) != 5 {
-			t.Errorf("Number of log files should be 5")
+			t.Errorf("Number of log files should be 5, current: %d", len(logFiles))
 		}
 
 		// check rolling log file size(asynchronous, may exceed 4K at most)
@@ -262,6 +297,7 @@ func TestAsyncRollWriter(t *testing.T) {
 		if compressFileNum != 4 {
 			t.Errorf("Number of compress log files should be 4")
 		}
+		require.Nil(t, asyncWriter.Close())
 	})
 
 	// wait 1 second.
@@ -272,12 +308,13 @@ func TestAsyncRollWriter(t *testing.T) {
 }
 
 func TestRollWriterRace(t *testing.T) {
-	logDir := filepath.Join(logDirBench, "rollwriter_race")
+	logDir := t.TempDir()
 
-	writer, _ := NewRollWriter(
+	writer, err := NewRollWriter(
 		filepath.Join(logDir, "test.log"),
 		WithRotationTime(".%Y%m%d"),
 	)
+	require.Nil(t, err)
 	writer.opts.MaxSize = 1
 
 	wg := sync.WaitGroup{}
@@ -297,15 +334,12 @@ func TestRollWriterRace(t *testing.T) {
 	}()
 	wg.Wait()
 
-	_ = writer.Close()
-	time.Sleep(20 * time.Millisecond)
-	ret := execCommand("/bin/bash", "-c", "cat "+logDir+"/*|wc -l")
-	assert.NotNil(t, ret)
+	time.Sleep(time.Second) // Wait till all the files are closed.
+	require.Nil(t, writer.Close())
 }
 
 func TestAsyncRollWriterRace(t *testing.T) {
-	// clean up test files lest over from last time.
-	logDir := filepath.Join(logDirBench, "async_rollwriter_race")
+	logDir := t.TempDir()
 
 	writer, _ := NewRollWriter(
 		filepath.Join(logDir, "test.log"),
@@ -331,10 +365,8 @@ func TestAsyncRollWriterRace(t *testing.T) {
 	}()
 	wg.Wait()
 
-	_ = w.Close()
 	time.Sleep(20 * time.Millisecond)
-	ret := execCommand("/bin/bash", "-c", "cat "+logDir+"/*|wc -l")
-	assert.NotNil(t, ret)
+	require.Nil(t, w.Close())
 }
 
 func TestAsyncRollWriterSyncTwice(t *testing.T) {
@@ -345,6 +377,152 @@ func TestAsyncRollWriterSyncTwice(t *testing.T) {
 	require.Nil(t, w.Close())
 }
 
+func TestAsyncRollWriterDirectWrite(t *testing.T) {
+	logSize := 1
+	w := NewAsyncRollWriter(&noopWriteCloser{}, WithWriteLogSize(logSize))
+	w.Write([]byte("hello"))
+	time.Sleep(time.Millisecond)
+	require.Nil(t, w.Sync())
+	require.Nil(t, w.Sync())
+	require.Nil(t, w.Close())
+}
+
+func TestRollWriterError(t *testing.T) {
+	logDir := t.TempDir()
+	t.Run("reopen file", func(t *testing.T) {
+		r, err := NewRollWriter(path.Join(logDir, "trpc.log"))
+		require.Nil(t, err)
+		r.os = errOS{openFileErr: errAlwaysFail}
+		r.reopenFile()
+		require.Nil(t, r.Close())
+	})
+	t.Run("delay close and rename file", func(t *testing.T) {
+		r, err := NewRollWriter(path.Join(logDir, "trpc.log"))
+		require.Nil(t, err)
+		r.os = errOS{renameErr: errAlwaysFail}
+		f, err := os.CreateTemp(logDir, "trpc.log")
+		require.Nil(t, err)
+		r.delayCloseAndRenameFile(&closeAndRenameFile{file: f, rename: path.Join(logDir, "tmp.log")})
+		time.Sleep(30 * time.Millisecond)
+		require.Nil(t, r.Close())
+	})
+	t.Run("match log file", func(t *testing.T) {
+		r, err := NewRollWriter(path.Join(logDir, "trpc.log"))
+		require.Nil(t, err)
+		r.os = errOS{statErr: errAlwaysFail}
+		_, err = r.matchLogFile("trpc.log.20230130", "trpc.log")
+		require.NotNil(t, err)
+		require.Nil(t, r.Close())
+	})
+	t.Run("remove files", func(t *testing.T) {
+		r, err := NewRollWriter(path.Join(logDir, "trpc.log"))
+		require.Nil(t, err)
+		r.os = errOS{removeErr: errAlwaysFail}
+		r.removeFiles([]logInfo{{time.Time{}, &noopFileInfo{}}})
+		require.Nil(t, r.Close())
+	})
+	t.Run("compress file", func(t *testing.T) {
+		file := path.Join(logDir, "trpc.log")
+		r, err := NewRollWriter(file)
+		require.Nil(t, err)
+		r.os = errOS{openErr: errAlwaysFail}
+		require.NotNil(t, r.compressFile(file, ""))
+		r.os = errOS{openFileErr: errAlwaysFail}
+		f, err := os.Create(file)
+		require.Nil(t, err)
+		require.Nil(t, f.Close())
+		require.NotNil(t, r.compressFile(file, ""))
+		require.Nil(t, r.Close())
+	})
+}
+
+type noopFileInfo struct{}
+
+func (*noopFileInfo) Name() string {
+	return "trpc.log"
+}
+
+func (*noopFileInfo) IsDir() bool {
+	return false
+}
+
+func (*noopFileInfo) Type() os.FileMode {
+	return fs.ModeAppend
+}
+
+func (*noopFileInfo) Info() (os.FileInfo, error) {
+	return &noopFileInfo{}, nil
+}
+
+func (*noopFileInfo) Sys() interface{} {
+	return nil
+}
+
+func (*noopFileInfo) Size() int64 {
+	return 0
+}
+
+func (*noopFileInfo) Mode() os.FileMode {
+	return os.ModePerm
+}
+
+func (*noopFileInfo) ModTime() time.Time {
+	return time.Time{}
+}
+
+var errAlwaysFail = errors.New("always fail")
+
+type errOS struct {
+	openErr     error
+	openFileErr error
+	mkdirAllErr error
+	renameErr   error
+	statErr     error
+	removeErr   error
+}
+
+func (o errOS) Open(name string) (*os.File, error) {
+	if o.openErr != nil {
+		return nil, o.openErr
+	}
+	return os.Open(name)
+}
+
+func (o errOS) OpenFile(name string, flag int, perm fs.FileMode) (*os.File, error) {
+	if o.openFileErr != nil {
+		return nil, o.openFileErr
+	}
+	return os.OpenFile(name, flag, perm)
+}
+
+func (o errOS) MkdirAll(path string, perm fs.FileMode) error {
+	if o.mkdirAllErr != nil {
+		return o.mkdirAllErr
+	}
+	return os.MkdirAll(path, perm)
+}
+
+func (o errOS) Rename(oldpath string, newpath string) error {
+	if o.renameErr != nil {
+		return o.renameErr
+	}
+	return os.Rename(oldpath, newpath)
+}
+
+func (o errOS) Stat(name string) (fs.FileInfo, error) {
+	if o.statErr != nil {
+		return nil, o.statErr
+	}
+	return os.Stat(name)
+}
+
+func (o errOS) Remove(name string) error {
+	if o.removeErr != nil {
+		return o.removeErr
+	}
+	return os.Remove(name)
+}
+
 type noopWriteCloser struct{}
 
 func (*noopWriteCloser) Write(p []byte) (n int, err error) { return }
@@ -353,7 +531,7 @@ func (*noopWriteCloser) Close() (err error) { return }
 
 // BenchmarkRollWriterBySize benchmarks RollWriter by size.
 func BenchmarkRollWriterBySize(b *testing.B) {
-	logDir := filepath.Join(logDirBench, "rollwriter_bysize")
+	logDir := b.TempDir()
 
 	// init RollWriter.
 	writer, _ := NewRollWriter(filepath.Join(logDir, "test.log"))
@@ -383,7 +561,7 @@ func BenchmarkRollWriterBySize(b *testing.B) {
 
 // BenchmarkRollWriterByTime benchmarks RollWriter by time.
 func BenchmarkRollWriterByTime(b *testing.B) {
-	logDir := filepath.Join(logDirBench, "rollwriter_bytime")
+	logDir := b.TempDir()
 
 	// init RollWriter.
 	writer, _ := NewRollWriter(
@@ -416,7 +594,7 @@ func BenchmarkRollWriterByTime(b *testing.B) {
 
 // BenchmarkAsyncRollWriterBySize benchmarks asynchronous RollWriter.
 func BenchmarkAsyncRollWriterBySize(b *testing.B) {
-	logDir := filepath.Join(logDirBench, "async_rollwriter_bysize")
+	logDir := b.TempDir()
 
 	// init RollWriter.
 	writer, _ := NewRollWriter(
@@ -449,7 +627,7 @@ func BenchmarkAsyncRollWriterBySize(b *testing.B) {
 
 // BenchmarkAsyncRollWriterByTime benchmarks asynchronous RollWriter by time.
 func BenchmarkAsyncRollWriterByTime(b *testing.B) {
-	logDir := filepath.Join(logDirBench, "async_rollwriter_bytime")
+	logDir := b.TempDir()
 
 	// init RollWriter.
 	writer, _ := NewRollWriter(
@@ -481,84 +659,21 @@ func BenchmarkAsyncRollWriterByTime(b *testing.B) {
 	})
 }
 
-// BenchmarkLumberjack benchmarks lumberjack.
-func BenchmarkLumberjack(b *testing.B) {
-	logDir := filepath.Join(logDirBench, "lumberjack")
-
-	// init Logger.
-	writer := &lumberjack.Logger{
-		Filename:   filepath.Join(logDir, "test.log"),
-		MaxSize:    100 * 1024 * 1024,
-		MaxBackups: 0,
-		MaxAge:     0,
-		Compress:   false,
-	}
-	core := zapcore.NewCore(
-		zapcore.NewConsoleEncoder(zap.NewProductionEncoderConfig()),
-		zapcore.AddSync(writer),
-		zapcore.DebugLevel,
-	)
-	logger := zap.New(
-		core,
-		zap.AddCaller(),
-	)
-	// warm up.
-	for i := 0; i < testTimes; i++ {
-		logger.Debug(fmt.Sprint("this is a test log: ", i))
-	}
-
-	b.SetParallelism(testRoutines / runtime.GOMAXPROCS(0))
-	b.ResetTimer()
-	b.RunParallel(func(pb *testing.PB) {
-		for pb.Next() {
-			logger.Debug("this is a test log")
-		}
-	})
-}
-
-// BenchmarkRotatelogs benchmarks rotate logs.
-func BenchmarkRotatelogs(b *testing.B) {
-	logDir := filepath.Join(logDirBench, "rotatelogs")
-
-	// init logs.
-	writer, _ := rotatelogs.New(
-		filepath.Join(logDir, "test.log")+".%Y%m%d",
-		rotatelogs.WithMaxAge(0),
-		rotatelogs.WithRotationTime(24*time.Hour),
-	)
-	core := zapcore.NewCore(
-		zapcore.NewConsoleEncoder(zap.NewProductionEncoderConfig()),
-		zapcore.AddSync(writer),
-		zapcore.DebugLevel,
-	)
-	logger := zap.New(
-		core,
-		zap.AddCaller(),
-	)
-	// warm up.
-	for i := 0; i < testTimes; i++ {
-		logger.Debug(fmt.Sprint("this is a test log: ", i))
-	}
-
-	b.SetParallelism(testRoutines / runtime.GOMAXPROCS(0))
-	b.ResetTimer()
-	b.RunParallel(func(pb *testing.PB) {
-		for pb.Next() {
-			logger.Debug("this is a test log")
-		}
-	})
-}
-
 func printLogFiles(logDir string) {
 	fmt.Println("================================================")
 	fmt.Printf("[%s]:\n", logDir)
-	files, err := ioutil.ReadDir(logDir)
+
+	entries, err := os.ReadDir(logDir)
 	if err != nil {
-		fmt.Println("ReadDir failed ", err)
-		return
+		fmt.Println("get entries failed ", err)
 	}
-	for _, file := range files {
-		fmt.Println("\t", file.Name(), file.Size())
+	for _, entry := range entries {
+		info, err := entry.Info()
+		if err != nil {
+			fmt.Println("get info failed ", err)
+			continue
+		}
+		fmt.Println("\t", info.Name(), info.Size())
 	}
 }
 
@@ -574,20 +689,20 @@ func execCommand(name string, args ...string) string {
 	return string(output)
 }
 
-func getLogBackups(logDir string, prefix string) []os.FileInfo {
-	logFiles := []os.FileInfo{}
-	files, err := ioutil.ReadDir(logDir)
+func getLogBackups(logDir, prefix string) []os.FileInfo {
+	entries, err := os.ReadDir(logDir)
 	if err != nil {
-		return logFiles
+		return nil
 	}
 
-	for _, file := range files {
+	var logFiles []os.FileInfo
+	for _, file := range entries {
 		if !strings.HasPrefix(file.Name(), prefix) {
 			continue
 		}
-
-		logFiles = append(logFiles, file)
+		if info, err := file.Info(); err == nil {
+			logFiles = append(logFiles, info)
+		}
 	}
-
 	return logFiles
 }

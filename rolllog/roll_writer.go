@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -37,12 +37,15 @@ type RollWriter struct {
 	currSize int64
 	currFile atomic.Value
 	openTime int64
+	closed   uint32
 
 	mu         sync.Mutex
 	notifyOnce sync.Once
 	notifyCh   chan bool
 	closeOnce  sync.Once
-	closeCh    chan *os.File
+	closeCh    chan *closeAndRenameFile
+
+	os customizedOS
 }
 
 // NewRollWriter creates a new RollWriter.
@@ -73,9 +76,10 @@ func NewRollWriter(filePath string, opt ...Option) (*RollWriter, error) {
 		opts:     opts,
 		pattern:  pattern,
 		currDir:  filepath.Dir(filePath),
+		os:       defaultCustomizedOS,
 	}
 
-	if err := os.MkdirAll(w.currDir, 0755); err != nil {
+	if err := w.os.MkdirAll(w.currDir, 0755); err != nil {
 		return nil, err
 	}
 
@@ -84,6 +88,10 @@ func NewRollWriter(filePath string, opt ...Option) (*RollWriter, error) {
 
 // Write writes logs. It implements io.Writer.
 func (w *RollWriter) Write(v []byte) (n int, err error) {
+	if atomic.LoadUint32(&w.closed) == 1 {
+		return 0, errors.New("roll writer has been closed")
+	}
+
 	// reopen file every 10 seconds.
 	if w.getCurrFile() == nil || time.Now().Unix()-atomic.LoadInt64(&w.openTime) > 10 {
 		w.mu.Lock()
@@ -111,6 +119,9 @@ func (w *RollWriter) Write(v []byte) (n int, err error) {
 
 // Close closes the current log file. It implements io.Closer.
 func (w *RollWriter) Close() error {
+	if !atomic.CompareAndSwapUint32(&w.closed, 0, 1) {
+		return errors.New("closing closed roll writer")
+	}
 	if w.getCurrFile() == nil {
 		return nil
 	}
@@ -147,48 +158,15 @@ func (w *RollWriter) setCurrFile(file *os.File) {
 func (w *RollWriter) reopenFile() {
 	if w.getCurrFile() == nil || time.Now().Unix()-atomic.LoadInt64(&w.openTime) > 10 {
 		atomic.StoreInt64(&w.openTime, time.Now().Unix())
+		oldPath := w.currPath
 		currPath := w.pattern.FormatString(time.Now())
 		if w.currPath != currPath {
 			w.currPath = currPath
 			w.notify()
 		}
-		_ = w.doReopenFile(w.currPath)
-	}
-}
-
-// doReopenFile reopen the file.
-func (w *RollWriter) doReopenFile(path string) error {
-	atomic.StoreInt64(&w.openTime, time.Now().Unix())
-	lastFile := w.getCurrFile()
-	of, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0666)
-	if err == nil {
-		w.setCurrFile(of)
-		if lastFile != nil {
-			// delay closing until not used.
-			w.delayCloseFile(lastFile)
+		if err := w.doReopenFile(w.currPath, oldPath); err != nil {
+			fmt.Printf("w.doReopenFile %s err: %+v\n", w.currPath, err)
 		}
-		st, _ := os.Stat(path)
-		if st != nil {
-			atomic.StoreInt64(&w.currSize, st.Size())
-		}
-	}
-	return err
-}
-
-// backupFile backs this file up and reopen a new one if file size is too large.
-func (w *RollWriter) backupFile() {
-	if w.opts.MaxSize > 0 && atomic.LoadInt64(&w.currSize) >= w.opts.MaxSize {
-		atomic.StoreInt64(&w.currSize, 0)
-
-		// rename the old file.
-		newName := w.currPath + "." + time.Now().Format(backupTimeFormat)
-		if _, e := os.Stat(w.currPath); !os.IsNotExist(e) {
-			_ = os.Rename(w.currPath, newName)
-		}
-
-		// reopen a new one.
-		_ = w.doReopenFile(w.currPath)
-		w.notify()
 	}
 }
 
@@ -214,13 +192,13 @@ func (w *RollWriter) runCleanFiles() {
 	}
 }
 
-// delayCloseFile delay closing file
-func (w *RollWriter) delayCloseFile(file *os.File) {
+// delayCloseAndRenameFile delay closing and renaming the given file.
+func (w *RollWriter) delayCloseAndRenameFile(f *closeAndRenameFile) {
 	w.closeOnce.Do(func() {
-		w.closeCh = make(chan *os.File, 100)
+		w.closeCh = make(chan *closeAndRenameFile, 100)
 		go w.runCloseFiles()
 	})
-	w.closeCh <- file
+	w.closeCh <- f
 }
 
 // runCloseFiles delay closing file in a new goroutine.
@@ -228,7 +206,16 @@ func (w *RollWriter) runCloseFiles() {
 	for f := range w.closeCh {
 		// delay 20ms
 		time.Sleep(20 * time.Millisecond)
-		f.Close()
+		if err := f.file.Close(); err != nil {
+			fmt.Printf("f.file.Close err: %+v, filename: %s\n", err, f.file.Name())
+		}
+		if f.rename == "" || f.file.Name() == f.rename {
+			continue
+		}
+		if err := w.os.Rename(f.file.Name(), f.rename); err != nil {
+			fmt.Printf("os.Rename from %s to %s err: %+v\n", f.file.Name(), f.rename, err)
+		}
+		w.notify()
 	}
 }
 
@@ -236,42 +223,40 @@ func (w *RollWriter) runCloseFiles() {
 func (w *RollWriter) cleanFiles() {
 	// get the file list of current log.
 	files, err := w.getOldLogFiles()
-	if err != nil || len(files) == 0 {
+	if err != nil {
+		fmt.Printf("w.getOldLogFiles err: %+v\n", err)
+		return
+	}
+	if len(files) == 0 {
 		return
 	}
 
-	// find the oldest files to scavenge.
-	var compress, remove []logInfo
-	files = filterByMaxBackups(files, &remove, w.opts.MaxBackups)
+	files, redundantInfos := partitionByMaxBackups(files, w.opts.MaxBackups)
+	files, expiredInfos := partitionByMaxAge(files, w.opts.MaxAge)
+	w.removeFiles(append(redundantInfos, expiredInfos...))
 
-	// find the expired files by last modified time.
-	files = filterByMaxAge(files, &remove, w.opts.MaxAge)
-
-	// find files to compress by file extension .gz.
-	filterByCompressExt(files, &compress, w.opts.Compress)
-
-	// delete expired or redundant files.
-	w.removeFiles(remove)
-
-	// compress log files.
-	w.compressFiles(compress)
+	if w.opts.Compress {
+		_, uncompressedFiles := partitionByCompressExt(files, compressSuffix)
+		w.compressFiles(uncompressedFiles)
+	}
 }
 
 // getOldLogFiles returns the log file list ordered by modified time.
 func (w *RollWriter) getOldLogFiles() ([]logInfo, error) {
-	files, err := ioutil.ReadDir(w.currDir)
+	entries, err := os.ReadDir(w.currDir)
 	if err != nil {
-		return nil, fmt.Errorf("can't read log file directory: %s", err)
+		return nil, fmt.Errorf("can't read log file directory %s :%w", w.currDir, err)
 	}
-	logFiles := []logInfo{}
+
+	var logFiles []logInfo
 	filename := filepath.Base(w.filePath)
-	for _, f := range files {
-		if f.IsDir() {
+	for _, e := range entries {
+		if e.IsDir() {
 			continue
 		}
 
-		if modTime, err := w.matchLogFile(f.Name(), filename); err == nil {
-			logFiles = append(logFiles, logInfo{modTime, f})
+		if modTime, err := w.matchLogFile(e.Name(), filename); err == nil {
+			logFiles = append(logFiles, logInfo{modTime, e})
 		}
 	}
 	sort.Sort(byFormatTime(logFiles))
@@ -295,17 +280,21 @@ func (w *RollWriter) matchLogFile(filename, filePrefix string) (time.Time, error
 		return time.Time{}, errors.New("mismatched prefix")
 	}
 
-	if st, _ := os.Stat(filepath.Join(w.currDir, filename)); st != nil {
-		return st.ModTime(), nil
+	st, err := w.os.Stat(filepath.Join(w.currDir, filename))
+	if err != nil {
+		return time.Time{}, fmt.Errorf("file stat fail: %w", err)
 	}
-	return time.Time{}, errors.New("file stat fail")
+	return st.ModTime(), nil
 }
 
 // removeFiles deletes expired or redundant log files.
 func (w *RollWriter) removeFiles(remove []logInfo) {
 	// clean expired or redundant files.
 	for _, f := range remove {
-		os.Remove(filepath.Join(w.currDir, f.Name()))
+		file := filepath.Join(w.currDir, f.Name())
+		if err := w.os.Remove(file); err != nil {
+			fmt.Printf("remove file %s err: %+v\n", file, err)
+		}
 	}
 }
 
@@ -314,83 +303,80 @@ func (w *RollWriter) compressFiles(compress []logInfo) {
 	// compress log files.
 	for _, f := range compress {
 		fn := filepath.Join(w.currDir, f.Name())
-		compressFile(fn, fn+compressSuffix)
+		w.compressFile(fn, fn+compressSuffix)
 	}
 }
 
-// filterByMaxBackups filters redundant files that exceeded the limit.
-func filterByMaxBackups(files []logInfo, remove *[]logInfo, maxBackups int) []logInfo {
+func partitionByMaxBackups(files []logInfo, maxBackups int) (necessary, redundant []logInfo) {
 	if maxBackups == 0 || len(files) < maxBackups {
-		return files
+		return files, nil
 	}
-	var remaining []logInfo
-	preserved := make(map[string]bool)
-	for _, f := range files {
-		fn := strings.TrimSuffix(f.Name(), compressSuffix)
-		preserved[fn] = true
 
-		if len(preserved) > maxBackups {
-			*remove = append(*remove, f)
-		} else {
-			remaining = append(remaining, f)
-		}
-	}
-	return remaining
+	preserved := make(map[string]struct{})
+	return partition(files, func(f logInfo) bool {
+		fn := strings.TrimSuffix(f.Name(), compressSuffix)
+		preserved[fn] = struct{}{}
+		return len(preserved) <= maxBackups
+	})
 }
 
-// filterByMaxAge filters expired files.
-func filterByMaxAge(files []logInfo, remove *[]logInfo, maxAge int) []logInfo {
+func partitionByMaxAge(files []logInfo, maxAge int) (valid, expired []logInfo) {
 	if maxAge <= 0 {
-		return files
+		return files, nil
 	}
-	var remaining []logInfo
+
 	diff := time.Duration(int64(24*time.Hour) * int64(maxAge))
 	cutoff := time.Now().Add(-1 * diff)
-	for _, f := range files {
-		if f.timestamp.Before(cutoff) {
-			*remove = append(*remove, f)
-		} else {
-			remaining = append(remaining, f)
-		}
-	}
-	return remaining
+	return partition(files, func(f logInfo) bool {
+		return !f.timestamp.Before(cutoff)
+	})
 }
 
-// filterByCompressExt filters all compressed files.
-func filterByCompressExt(files []logInfo, compress *[]logInfo, needCompress bool) {
-	if !needCompress {
-		return
-	}
-	for _, f := range files {
-		if !strings.HasSuffix(f.Name(), compressSuffix) {
-			*compress = append(*compress, f)
+func partitionByCompressExt(files []logInfo, compressExt string) (incompressible, compressible []logInfo) {
+	return partition(files, func(info logInfo) bool {
+		return strings.HasSuffix(info.Name(), compressExt)
+	})
+}
+
+// partition partitions the infos into two parts, such that the infos satisfying match are in the matching,
+// and the elements not satisfying match are in the nonMatching.
+func partition(infos []logInfo, match func(logInfo) bool) (matching, nonMatching []logInfo) {
+	for _, info := range infos {
+		if match(info) {
+			matching = append(matching, info)
+		} else {
+			nonMatching = append(nonMatching, info)
 		}
 	}
+	return
 }
 
 // compressFile compresses file src to dst, and removes src on success.
-func compressFile(src, dst string) (err error) {
-	f, err := os.Open(src)
+func (w *RollWriter) compressFile(src, dst string) (err error) {
+	f, err := w.os.Open(src)
 	if err != nil {
 		return fmt.Errorf("failed to open file: %v", err)
 	}
-	defer f.Close()
 
-	gzf, err := os.OpenFile(dst, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0666)
+	gzf, err := w.os.OpenFile(dst, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0666)
 	if err != nil {
+		f.Close()
 		return fmt.Errorf("failed to open compressed file: %v", err)
 	}
-	defer gzf.Close()
 
 	gz := gzip.NewWriter(gzf)
 	defer func() {
 		gz.Close()
+		// Make sure files are closed before removing, or else the removal
+		// will fail on Windows.
+		f.Close()
+		gzf.Close()
 		if err != nil {
-			os.Remove(dst)
+			w.os.Remove(dst)
 			err = fmt.Errorf("failed to compress file: %v", err)
-		} else {
-			os.Remove(src)
+			return
 		}
+		w.os.Remove(src)
 	}()
 
 	if _, err := io.Copy(gz, f); err != nil {
@@ -399,10 +385,15 @@ func compressFile(src, dst string) (err error) {
 	return nil
 }
 
+type closeAndRenameFile struct {
+	file   *os.File
+	rename string
+}
+
 // logInfo is an assistant struct which is used to return file name and last modified time.
 type logInfo struct {
 	timestamp time.Time
-	os.FileInfo
+	os.DirEntry
 }
 
 // byFormatTime sorts by time descending order.
@@ -421,4 +412,41 @@ func (b byFormatTime) Swap(i, j int) {
 // Len returns the length of list b.
 func (b byFormatTime) Len() int {
 	return len(b)
+}
+
+var defaultCustomizedOS = stdOS{}
+
+type stdOS struct{}
+
+func (stdOS) Open(name string) (*os.File, error) {
+	return os.Open(name)
+}
+
+func (stdOS) OpenFile(name string, flag int, perm fs.FileMode) (*os.File, error) {
+	return os.OpenFile(name, flag, perm)
+}
+
+func (stdOS) MkdirAll(path string, perm fs.FileMode) error {
+	return os.MkdirAll(path, perm)
+}
+
+func (stdOS) Rename(oldpath string, newpath string) error {
+	return os.Rename(oldpath, newpath)
+}
+
+func (stdOS) Stat(name string) (fs.FileInfo, error) {
+	return os.Stat(name)
+}
+
+func (stdOS) Remove(name string) error {
+	return os.Remove(name)
+}
+
+type customizedOS interface {
+	Open(name string) (*os.File, error)
+	OpenFile(name string, flag int, perm fs.FileMode) (*os.File, error)
+	MkdirAll(path string, perm fs.FileMode) error
+	Rename(oldpath string, newpath string) error
+	Stat(name string) (fs.FileInfo, error)
+	Remove(name string) error
 }
