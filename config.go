@@ -6,23 +6,17 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// output name, default support console and file.
-const (
-	OutputConsole = "console"
-	OutputFile    = "file"
-)
-
 // Config is the log config. Each log may have multiple outputs.
 type Config []OutputConfig
 
 // OutputConfig is the output config, includes console, file and remote.
 type OutputConfig struct {
 	// Writer is the output of log, such as console or file.
-	Writer      string
+	Writer      string      `yaml:"writer"`
 	WriteConfig WriteConfig `yaml:"writer_config"`
 
 	// Formatter is the format of log, such as console or json.
-	Formatter    string
+	Formatter    string       `yaml:"formatter"`
 	FormatConfig FormatConfig `yaml:"formatter_config"`
 
 	// RemoteConfig is the remote config. It's defined by business and should be registered by
@@ -30,10 +24,13 @@ type OutputConfig struct {
 	RemoteConfig yaml.Node `yaml:"remote_config"`
 
 	// Level controls the log level, like debug, info or error.
-	Level string
+	Level string `yaml:"level"`
 
 	// CallerSkip controls the nesting depth of log function.
 	CallerSkip int `yaml:"caller_skip"`
+
+	// EnableColor determines if the output is colored. The default value is false.
+	EnableColor bool `yaml:"enable_color"`
 }
 
 // WriteConfig is the local file config.
@@ -42,7 +39,7 @@ type WriteConfig struct {
 	LogPath string `yaml:"log_path"`
 	// Filename is the file name like trpc.log.
 	Filename string `yaml:"filename"`
-	// WriteMode is the log write mod. 1: sync, 2: async, 3: fast(maybe dropped).
+	// WriteMode is the log write mod. 1: sync, 2: async, 3: fast(maybe dropped), default as 3.
 	WriteMode int `yaml:"write_mode"`
 	// RollType is the log rolling type. Split files by size/time, default by size.
 	RollType string `yaml:"roll_type"`
@@ -66,19 +63,32 @@ type FormatConfig struct {
 	TimeFmt string `yaml:"time_fmt"`
 
 	// TimeKey is the time key of log output, default as "T".
+	// Example: 2023-07-03 20:42:24.624.
+	// Use "none" to disable this field.
 	TimeKey string `yaml:"time_key"`
 	// LevelKey is the level key of log output, default as "L".
+	// Example: DEBUG.
+	// Use "none" to disable this field.
 	LevelKey string `yaml:"level_key"`
 	// NameKey is the name key of log output, default as "N".
+	// Example: logger name.
+	// Use "none" to disable this field.
 	NameKey string `yaml:"name_key"`
 	// CallerKey is the caller key of log output, default as "C".
+	// Example: testing/testing.go:1576.
+	// Use "none" to disable this field.
 	CallerKey string `yaml:"caller_key"`
 	// FunctionKey is the function key of log output, default as "", which means not to print
 	// function name.
+	// Example: testing.tRunner.
+	// Use "F" to show the function name field.
 	FunctionKey string `yaml:"function_key"`
 	// MessageKey is the message key of log output, default as "M".
+	// Example: helloworld.
+	// Use "none" to disable this field.
 	MessageKey string `yaml:"message_key"`
 	// StackTraceKey is the stack trace key of log output, default as "S".
+	// Use "none" to disable this field.
 	StacktraceKey string `yaml:"stacktrace_key"`
 }
 

@@ -68,7 +68,7 @@ func NewZapLogWithCallerSkip(c Config, callerSkip int) Logger {
 		if writer == nil {
 			panic("log: writer core: " + o.Writer + " no registered")
 		}
-		decoder := &DecoderImp{OutputConfig: &o}
+		decoder := &Decoder{OutputConfig: &o}
 		if err := writer.Setup(o.Writer, decoder); err != nil {
 			panic("log: writer core: " + o.Writer + " setup fail: " + err.Error())
 		}
@@ -100,6 +100,9 @@ func newEncoder(c *OutputConfig) zapcore.Encoder {
 		EncodeDuration: zapcore.StringDurationEncoder,
 		EncodeCaller:   zapcore.ShortCallerEncoder,
 	}
+	if c.EnableColor {
+		encoderCfg.EncodeLevel = zapcore.CapitalColorLevelEncoder
+	}
 	switch c.Formatter {
 	case "console":
 		return zapcore.NewConsoleEncoder(encoderCfg)
@@ -111,7 +114,12 @@ func newEncoder(c *OutputConfig) zapcore.Encoder {
 }
 
 // GetLogEncoderKey gets user defined log output name, uses defKey if empty.
+// If key is "none", return empty string to disable the corresponding field.
 func GetLogEncoderKey(defKey, key string) string {
+	const none = "none"
+	if key == none {
+		return ""
+	}
 	if key == "" {
 		return defKey
 	}
@@ -142,15 +150,20 @@ func newFileCore(c *OutputConfig) (zapcore.Core, zap.AtomicLevel, error) {
 		return nil, zap.AtomicLevel{}, err
 	}
 
-	// write mod.
+	// write mode.
 	var ws zapcore.WriteSyncer
-	if c.WriteConfig.WriteMode == WriteSync {
+	switch m := c.WriteConfig.WriteMode; m {
+	case 0, WriteFast:
+		// Use WriteFast as default mode.
+		// It has better performance, discards logs on full and avoid blocking service.
+		ws = rolllog.NewAsyncRollWriter(writer, rolllog.WithDropLog(true))
+	case WriteSync:
 		ws = zapcore.AddSync(writer)
-	} else {
-		dropLog := c.WriteConfig.WriteMode == WriteFast
-		ws = rolllog.NewAsyncRollWriter(writer,
-			rolllog.WithDropLog(dropLog),
-		)
+	case WriteAsync:
+		ws = rolllog.NewAsyncRollWriter(writer, rolllog.WithDropLog(false))
+	default:
+		return nil, zap.AtomicLevel{}, fmt.Errorf("validating WriteMode parameter: got %d, "+
+			"but expect one of WriteFast(%d), WriteAsync(%d), or WriteSync(%d)", m, WriteFast, WriteAsync, WriteSync)
 	}
 
 	// log level.
@@ -221,7 +234,6 @@ func DefaultTimeFormat(t time.Time) []byte {
 }
 
 // ZapLogWrapper delegates zapLogger which was introduced in this
-// [issue](https://git.code.oa.com/trpc-go/trpc-go/issues/260).
 // By ZapLogWrapper proxy, we can add a layer to the debug series function calls, so that the caller
 // information can be set correctly.
 type ZapLogWrapper struct {
@@ -323,10 +335,26 @@ func (z *ZapLogWrapper) With(fields ...Field) Logger {
 	return z.l.With(fields...)
 }
 
+// WithOptions creates a new logger with the provided additional options.
+func (z *ZapLogWrapper) WithOptions(opts ...Option) Logger {
+	return &ZapLogWrapper{l: z.l.WithOptions(opts...).(*zapLog)}
+}
+
 // zapLog is a Logger implementation based on zaplogger.
 type zapLog struct {
 	levels []zap.AtomicLevel
 	logger *zap.Logger
+}
+
+func (l *zapLog) WithOptions(opts ...Option) Logger {
+	o := &options{}
+	for _, opt := range opts {
+		opt(o)
+	}
+	return &zapLog{
+		levels: l.levels,
+		logger: l.logger.WithOptions(zap.AddCallerSkip(o.skip)),
+	}
 }
 
 // WithFields set some user defined data to logs, such as uid, imei, etc.

@@ -3,6 +3,8 @@ package plog
 import (
 	"errors"
 	"path/filepath"
+
+	"github.com/tianxingpan/plog/plugin"
 )
 
 var (
@@ -11,16 +13,16 @@ var (
 	// DefaultFileWriterFactory is the default file output implementation.
 	DefaultFileWriterFactory = &FileWriterFactory{}
 
-	writers = make(map[string]Factory)
+	writers = make(map[string]plugin.Factory)
 )
 
 // RegisterWriter registers log output writer. Writer may have multiple implementations.
-func RegisterWriter(name string, writer Factory) {
+func RegisterWriter(name string, writer plugin.Factory) {
 	writers[name] = writer
 }
 
 // GetWriter gets log output writer, returns nil if not exist.
-func GetWriter(name string) Factory {
+func GetWriter(name string) plugin.Factory {
 	return writers[name]
 }
 
@@ -34,11 +36,11 @@ func (f *ConsoleWriterFactory) Type() string {
 }
 
 // Setup starts, loads and registers console output writer.
-func (f *ConsoleWriterFactory) Setup(name string, dec Decoder) error {
+func (f *ConsoleWriterFactory) Setup(name string, dec plugin.Decoder) error {
 	if dec == nil {
 		return errors.New("console writer decoder empty")
 	}
-	decoder, ok := dec.(*DecoderImp)
+	decoder, ok := dec.(*Decoder)
 	if !ok {
 		return errors.New("console writer log decoder type invalid")
 	}
@@ -60,11 +62,11 @@ func (f *FileWriterFactory) Type() string {
 }
 
 // Setup starts, loads and register file output writer.
-func (f *FileWriterFactory) Setup(name string, dec Decoder) error {
+func (f *FileWriterFactory) Setup(name string, dec plugin.Decoder) error {
 	if dec == nil {
 		return errors.New("file writer decoder empty")
 	}
-	decoder, ok := dec.(*DecoderImp)
+	decoder, ok := dec.(*Decoder)
 	if !ok {
 		return errors.New("file writer log decoder type invalid")
 	}
@@ -74,7 +76,7 @@ func (f *FileWriterFactory) Setup(name string, dec Decoder) error {
 	return nil
 }
 
-func (f *FileWriterFactory) setupConfig(decoder *DecoderImp) error {
+func (f *FileWriterFactory) setupConfig(decoder *Decoder) error {
 	cfg := &OutputConfig{}
 	if err := decoder.Decode(&cfg); err != nil {
 		return err
@@ -84,11 +86,6 @@ func (f *FileWriterFactory) setupConfig(decoder *DecoderImp) error {
 	}
 	if cfg.WriteConfig.RollType == "" {
 		cfg.WriteConfig.RollType = RollBySize
-	}
-	if cfg.WriteConfig.WriteMode == 0 {
-		// Use WriteFast as default mod.
-		// It has better performance, discards logs on full and avoid blocking service.
-		cfg.WriteConfig.WriteMode = WriteFast
 	}
 	core, level, err := newFileCore(cfg)
 	if err != nil {

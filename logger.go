@@ -1,12 +1,5 @@
 package plog
 
-import (
-	"fmt"
-
-	"go.uber.org/zap"
-	"go.uber.org/zap/zapcore"
-)
-
 // Field is the user defined log field.
 type Field struct {
 	Key   string
@@ -58,22 +51,27 @@ type Logger interface {
 	With(fields ...Field) Logger
 }
 
-// DecoderImp decodes the log.
-type DecoderImp struct {
-	OutputConfig *OutputConfig
-	Core         zapcore.Core
-	ZapLevel     zap.AtomicLevel
+// OptionLogger defines logger with additional options.
+type OptionLogger interface {
+	WithOptions(opts ...Option) Logger
 }
 
-// Decode decodes writer configuration, copy one.
-func (d *DecoderImp) Decode(cfg interface{}) error {
-	output, ok := cfg.(**OutputConfig)
-	if !ok {
-		return fmt.Errorf("decoder config type:%T invalid, not **OutputConfig", cfg)
-	}
-	*output = d.OutputConfig
-	return nil
-}
+// // DecoderImp decodes the log.
+// type DecoderImp struct {
+// 	OutputConfig *OutputConfig
+// 	Core         zapcore.Core
+// 	ZapLevel     zap.AtomicLevel
+// }
+
+// // Decode decodes writer configuration, copy one.
+// func (d *DecoderImp) Decode(cfg interface{}) error {
+// 	output, ok := cfg.(**OutputConfig)
+// 	if !ok {
+// 		return fmt.Errorf("decoder config type:%T invalid, not **OutputConfig", cfg)
+// 	}
+// 	*output = d.OutputConfig
+// 	return nil
+// }
 
 // RegisterLogger registers Logger. It supports multiple Logger implementation.
 func RegisterLogger(name string, logger Logger) {
@@ -91,23 +89,6 @@ func RegisterLogger(name string, logger Logger) {
 	}
 }
 
-// GetDefaultLogger gets the default Logger.
-// To configure it, set key in configuration file to default.
-// The console output is the default value.
-func GetDefaultLogger() Logger {
-	mu.RLock()
-	l := DefaultLogger
-	mu.RUnlock()
-	return l
-}
-
-// SetLogger sets the default Logger.
-func SetLogger(logger Logger) {
-	mu.Lock()
-	DefaultLogger = logger
-	mu.Unlock()
-}
-
 // GetLogger returns the Logger implementation by log name.
 // log.Debug use DefaultLogger to print logs. You may also use log.Get("name").Debug.
 func GetLogger(name string) Logger {
@@ -115,13 +96,4 @@ func GetLogger(name string) Logger {
 	l := loggers[name]
 	mu.RUnlock()
 	return l
-}
-
-// Sync syncs all registered loggers.
-func Sync() {
-	mu.RLock()
-	defer mu.RUnlock()
-	for _, logger := range loggers {
-		_ = logger.Sync()
-	}
 }
