@@ -27,8 +27,8 @@ const (
 // Generally, there are only two crucial cases involved:
 //  1. This function is called because the log reaches the maximum size:
 //     The arguments are like:
-//     * `newLink` = "./trpc.log"
-//     * `oldLink` = "./trpc.log.bk-20230117-180000.00127"
+//     * `newLink` = "./app.log"
+//     * `oldLink` = "./app.log.bk-20230117-180000.00127"
 //     Then this function will create newLink which points to a new temporary file.
 //     And rename the old temporary file as `oldLink` (asynchronously).
 //  2. This function is called because the log file needs to be reopened regularly
@@ -41,8 +41,8 @@ const (
 //     temporary file).
 //     2.2. `newLink` != `oldLink`:
 //     In this case, the typical arguments are like:
-//     * `newLink` = "./trpc.log.2023011718"
-//     * `oldLink` = "./trpc.log.2023011717"
+//     * `newLink` = "./app.log.2023011718"
+//     * `oldLink` = "./app.log.2023011717"
 //     Explanation: this function is called because of rolling by time. The newLink
 //     is present one hour later than the oldLink.
 //     Under this circumstance, we need to create a new temporary file and link it
@@ -75,9 +75,9 @@ func (w *RollWriter) doReopenFile(newLink string, oldLink string) error {
 
 	// Example tmp string:
 	// 1. roll by size = true/false, roll by time = false
-	//    ./tmp-20230117-180000.00127.trpc.log
+	//    ./tmp-20230117-180000.00127.app.log
 	// 2. roll by time = true and this function is called by reopenFile
-	//    ./tmp-20230117-180000.00127.trpc.log.2023011717
+	//    ./tmp-20230117-180000.00127.app.log.2023011717
 	// Note: use base name of `newLink` as suffix instead of prefix to prevent
 	// temporary files from being recognized as valid backup files.
 	tmp := path.Join(w.currDir, time.Now().Format(tmpTimeFormat)+"."+filepath.Base(newLink))
@@ -99,24 +99,22 @@ func (w *RollWriter) doReopenFile(newLink string, oldLink string) error {
 }
 
 func (w *RollWriter) tryResume(newLink, oldLink string) bool {
-	// Check if there exists `trpc.log -> tmp.xxxx.log`.
+	// Check if there exists `app.log -> tmp.xxxx.log`.
 	if oldLink != "" {
 		return false
 	}
 	st, err := os.Lstat(newLink)
-	if os.IsNotExist(err) { // The link `trpc.log` does not exist.
+	if os.IsNotExist(err) { // The link `app.log` does not exist.
 		return false
 	}
-	if !isSymlink(st.Mode()) { // `trpc.log` exists, but it is not a link.
+	if !isSymlink(st.Mode()) { // `app.log` exists, but it is not a link.
 		// Rename it to backup.
 		// This fixes the question 2 of
-		// https://git.woa.com/trpc-go/trpc-go/issues/789#note_88221093.
 		w.os.Rename(newLink, path.Join(w.currDir, time.Now().Format(bkTimeFormat)+"."+filepath.Base(newLink)))
 		return false
 	}
 
 	// The following fixes the question 1 of
-	// https://git.woa.com/trpc-go/trpc-go/issues/789#note_88221093.
 	fileName, err := os.Readlink(newLink)
 	if err != nil {
 		fmt.Printf("os.Readlink %s err: %+v\n", newLink, err)

@@ -60,7 +60,7 @@ func With(fields ...Field) Logger {
 	return GetDefaultLogger().With(fields...)
 }
 
-// RedirectStdLog redirects std log to trpc logger as log level INFO.
+// RedirectStdLog redirects std log to plog logger as log level INFO.
 // After redirection, log flag is zero, the prefix is empty.
 // The returned function may be used to recover log flag and prefix, and redirect output to
 // os.Stderr.
@@ -68,7 +68,7 @@ func RedirectStdLog(logger Logger) (func(), error) {
 	return RedirectStdLogAt(logger, zap.InfoLevel)
 }
 
-// RedirectStdLogAt redirects std log to trpc logger with a specific level.
+// RedirectStdLogAt redirects std log to plog logger with a specific level.
 // After redirection, log flag is zero, the prefix is empty.
 // The returned function may be used to recover log flag and prefix, and redirect output to
 // os.Stderr.
@@ -79,7 +79,7 @@ func RedirectStdLogAt(logger Logger, level zapcore.Level) (func(), error) {
 	if l, ok := logger.(*ZapLogWrapper); ok {
 		return zap.RedirectStdLogAt(l.l.logger, level)
 	}
-	return nil, fmt.Errorf("log: only supports redirecting std logs to trpc zap logger")
+	return nil, fmt.Errorf("log: only supports redirecting std logs to plog zap logger")
 }
 
 // Trace logs to TRACE log. Arguments are handled in the manner of fmt.Print.

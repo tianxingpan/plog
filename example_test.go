@@ -1,6 +1,27 @@
 package plog_test
 
-import log "github.com/tianxingpan/plog"
+import (
+	"testing"
+
+	"github.com/stretchr/testify/require"
+	log "github.com/tianxingpan/plog"
+)
+
+func TestSetLevel(t *testing.T) {
+	const level = "0"
+	log.SetLevel(level, log.LevelInfo)
+	require.Equal(t, log.LevelInfo, log.GetLevel(level))
+}
+
+func TestSetLogger(t *testing.T) {
+	logger := log.NewZapLog(log.Config{})
+	log.SetLogger(logger)
+	require.Equal(t, log.GetDefaultLogger(), logger)
+}
+
+func TestLogXXX(t *testing.T) {
+	log.Fatal("xxx")
+}
 
 func Example() {
 	l := log.NewZapLog([]log.OutputConfig{
@@ -18,7 +39,7 @@ func Example() {
 		log.Register(defaultLoggerName, oldDefaultLogger)
 	}()
 
-	l = l.With(log.Field{Key: "tRPC-Go", Value: "log"})
+	l = l.With(log.Field{Key: "plog", Value: "log"})
 	l.Trace("hello world")
 	l.Debug("hello world")
 	l.Info("hello world")
@@ -31,14 +52,14 @@ func Example() {
 	l.Errorf("hello world")
 
 	// Output:
-	// xxx	DEBUG	log/example_test.go:22	hello world	{"tRPC-Go": "log"}
-	// xxx	DEBUG	log/example_test.go:23	hello world	{"tRPC-Go": "log"}
-	// xxx	INFO	log/example_test.go:24	hello world	{"tRPC-Go": "log"}
-	// xxx	WARN	log/example_test.go:25	hello world	{"tRPC-Go": "log"}
-	// xxx	ERROR	log/example_test.go:26	hello world	{"tRPC-Go": "log"}
-	// xxx	DEBUG	log/example_test.go:27	hello world	{"tRPC-Go": "log"}
-	// xxx	DEBUG	log/example_test.go:28	hello world	{"tRPC-Go": "log"}
-	// xxx	INFO	log/example_test.go:29	hello world	{"tRPC-Go": "log"}
-	// xxx	WARN	log/example_test.go:30	hello world	{"tRPC-Go": "log"}
-	// xxx	ERROR	log/example_test.go:31	hello world	{"tRPC-Go": "log"}
+	// xxx	DEBUG	log/example_test.go:22	hello world	{"plog": "log"}
+	// xxx	DEBUG	log/example_test.go:23	hello world	{"plog": "log"}
+	// xxx	INFO	log/example_test.go:24	hello world	{"plog": "log"}
+	// xxx	WARN	log/example_test.go:25	hello world	{"plog": "log"}
+	// xxx	ERROR	log/example_test.go:26	hello world	{"plog": "log"}
+	// xxx	DEBUG	log/example_test.go:27	hello world	{"plog": "log"}
+	// xxx	DEBUG	log/example_test.go:28	hello world	{"plog": "log"}
+	// xxx	INFO	log/example_test.go:29	hello world	{"plog": "log"}
+	// xxx	WARN	log/example_test.go:30	hello world	{"plog": "log"}
+	// xxx	ERROR	log/example_test.go:31	hello world	{"plog": "log"}
 }

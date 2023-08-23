@@ -390,39 +390,39 @@ func TestAsyncRollWriterDirectWrite(t *testing.T) {
 func TestRollWriterError(t *testing.T) {
 	logDir := t.TempDir()
 	t.Run("reopen file", func(t *testing.T) {
-		r, err := NewRollWriter(path.Join(logDir, "trpc.log"))
+		r, err := NewRollWriter(path.Join(logDir, "app.log"))
 		require.Nil(t, err)
 		r.os = errOS{openFileErr: errAlwaysFail}
 		r.reopenFile()
 		require.Nil(t, r.Close())
 	})
 	t.Run("delay close and rename file", func(t *testing.T) {
-		r, err := NewRollWriter(path.Join(logDir, "trpc.log"))
+		r, err := NewRollWriter(path.Join(logDir, "app.log"))
 		require.Nil(t, err)
 		r.os = errOS{renameErr: errAlwaysFail}
-		f, err := os.CreateTemp(logDir, "trpc.log")
+		f, err := os.CreateTemp(logDir, "app.log")
 		require.Nil(t, err)
 		r.delayCloseAndRenameFile(&closeAndRenameFile{file: f, rename: path.Join(logDir, "tmp.log")})
 		time.Sleep(30 * time.Millisecond)
 		require.Nil(t, r.Close())
 	})
 	t.Run("match log file", func(t *testing.T) {
-		r, err := NewRollWriter(path.Join(logDir, "trpc.log"))
+		r, err := NewRollWriter(path.Join(logDir, "app.log"))
 		require.Nil(t, err)
 		r.os = errOS{statErr: errAlwaysFail}
-		_, err = r.matchLogFile("trpc.log.20230130", "trpc.log")
+		_, err = r.matchLogFile("app.log.20230130", "app.log")
 		require.NotNil(t, err)
 		require.Nil(t, r.Close())
 	})
 	t.Run("remove files", func(t *testing.T) {
-		r, err := NewRollWriter(path.Join(logDir, "trpc.log"))
+		r, err := NewRollWriter(path.Join(logDir, "app.log"))
 		require.Nil(t, err)
 		r.os = errOS{removeErr: errAlwaysFail}
 		r.removeFiles([]logInfo{{time.Time{}, &noopFileInfo{}}})
 		require.Nil(t, r.Close())
 	})
 	t.Run("compress file", func(t *testing.T) {
-		file := path.Join(logDir, "trpc.log")
+		file := path.Join(logDir, "app.log")
 		r, err := NewRollWriter(file)
 		require.Nil(t, err)
 		r.os = errOS{openErr: errAlwaysFail}
@@ -439,7 +439,7 @@ func TestRollWriterError(t *testing.T) {
 type noopFileInfo struct{}
 
 func (*noopFileInfo) Name() string {
-	return "trpc.log"
+	return "app.log"
 }
 
 func (*noopFileInfo) IsDir() bool {

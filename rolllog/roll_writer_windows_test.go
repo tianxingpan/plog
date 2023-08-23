@@ -16,7 +16,7 @@ import (
 )
 
 func TestRollWriterResume(t *testing.T) {
-	logDir, logName := t.TempDir(), "test_trpc.log"
+	logDir, logName := t.TempDir(), "test_app.log"
 	if _, err := os.Stat(logDir); os.IsNotExist(err) {
 		require.Nil(t, os.Mkdir(logDir, os.ModeDir))
 	}
@@ -54,7 +54,7 @@ func TestRollWriterResume(t *testing.T) {
 }
 
 func TestRollWriterBackupExistingNonlinkFile(t *testing.T) {
-	logDir, logName := t.TempDir(), "test_trpc.log"
+	logDir, logName := t.TempDir(), "test_app.log"
 	if _, err := os.Stat(logDir); os.IsNotExist(err) {
 		require.Nil(t, os.Mkdir(logDir, os.ModeDir))
 	}

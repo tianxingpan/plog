@@ -31,7 +31,7 @@ var defaultConfig = []log.OutputConfig{
 		Level:     "info",
 		Formatter: "json",
 		WriteConfig: log.WriteConfig{
-			Filename:   "trpc_size.log",
+			Filename:   "app_size.log",
 			RollType:   "size",
 			MaxAge:     7,
 			MaxBackups: 10,
@@ -46,7 +46,7 @@ var defaultConfig = []log.OutputConfig{
 		Level:     "info",
 		Formatter: "json",
 		WriteConfig: log.WriteConfig{
-			Filename:   "trpc_time.log",
+			Filename:   "app_time.log",
 			RollType:   "time",
 			MaxAge:     7,
 			MaxBackups: 10,
@@ -85,7 +85,7 @@ func TestNewZapLog_WriteMode(t *testing.T) {
 				Writer: log.OutputFile,
 				WriteConfig: log.WriteConfig{
 					LogPath:   logDir,
-					Filename:  "trpc.log",
+					Filename:  "app.log",
 					WriteMode: invalidWriteMode,
 				},
 			}})
@@ -93,9 +93,9 @@ func TestNewZapLog_WriteMode(t *testing.T) {
 	})
 	t.Run("valid write mode", func(t *testing.T) {
 		const (
-			syncFileName  = "trpc.syncLog"
-			asyncFileName = "trpc.asyncLog"
-			fastFileName  = "trpc.fastLog"
+			syncFileName  = "app.syncLog"
+			asyncFileName = "app.asyncLog"
+			fastFileName  = "app.fastLog"
 		)
 		tests := []struct {
 			name   string

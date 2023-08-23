@@ -87,6 +87,7 @@ func (f *FileWriterFactory) setupConfig(decoder *Decoder) error {
 	if cfg.WriteConfig.RollType == "" {
 		cfg.WriteConfig.RollType = RollBySize
 	}
+
 	core, level, err := newFileCore(cfg)
 	if err != nil {
 		return err
