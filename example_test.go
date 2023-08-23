@@ -126,14 +126,14 @@ log:
   - writer: file # local log file
     level: debug # std log level
     writer_config: # config of local file output
-      filename: trpc_time.log # the path of local rolling log files
+      filename: app_time.log # the path of local rolling log files
       roll_type: time    # file rolling type
       max_age: 7         # max expire days
       time_unit: day     # rolling time interval
   - writer: file # local file log
     level: debug # std output log level
     writer_config: # config of local file output
-      filename: trpc_size.log # the path of local rolling log files
+      filename: app_size.log # the path of local rolling log files
       roll_type: size    # file rolling type
       max_age: 7         # max expire days
       max_size: 100      # size of local rolling file, unit MB
