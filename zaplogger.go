@@ -28,6 +28,7 @@ const (
 // Levels is the map from string to zapcore.Level.
 var Levels = map[string]zapcore.Level{
 	"":      zapcore.DebugLevel,
+	"trace": zapcore.DebugLevel,
 	"debug": zapcore.DebugLevel,
 	"info":  zapcore.InfoLevel,
 	"warn":  zapcore.WarnLevel,

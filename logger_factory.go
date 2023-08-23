@@ -10,12 +10,12 @@ import (
 	"go.uber.org/zap/zapcore"
 )
 
-func init() {
-	RegisterWriter(OutputConsole, DefaultConsoleWriterFactory)
-	RegisterWriter(OutputFile, DefaultFileWriterFactory)
-	Register(defaultLoggerName, NewZapLog(defaultConfig))
-	plugin.Register(defaultLoggerName, DefaultLogFactory)
-}
+// func init() {
+// 	RegisterWriter(OutputConsole, DefaultConsoleWriterFactory)
+// 	RegisterWriter(OutputFile, DefaultFileWriterFactory)
+// 	Register(defaultLoggerName, NewZapLog(defaultConfig))
+// 	plugin.Register(defaultLoggerName, DefaultLogFactory)
+// }
 
 var (
 	// DefaultLogger the default Logger. The initial output is console. When frame start, it is
